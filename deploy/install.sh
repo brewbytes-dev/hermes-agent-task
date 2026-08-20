@@ -17,6 +17,8 @@ backup_dir="$hermes_home/backups/agent-task-production-$timestamp"
 test -x "$managed_python"
 install -d -o "$hermes_user" -g "$hermes_group" -m 0700 "$backup_dir"
 install -d -o "$hermes_user" -g "$hermes_group" -m 0700 "$hermes_home/logs/agent-task"
+install -o "$hermes_user" -g "$hermes_group" -m 0700 \
+  "$source_root/deploy/migrate_crontab.py" "$backup_dir/migrate_crontab.py"
 
 for source in "$source_root"/scripts/agent_task_*.py; do
   target="$hermes_home/scripts/$(basename "$source")"
@@ -47,7 +49,7 @@ chmod 0600 "$backup_dir/crontab.before"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
   "$managed_python" -m py_compile "$hermes_home"/scripts/agent_task_*.py "$plugin_dir/__init__.py" "$plugin_target"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" PYTHONPATH="$hermes_home/hermes-agent" \
-  "$managed_python" "$source_root/deploy/migrate_crontab.py" --apply
+  "$managed_python" "$backup_dir/migrate_crontab.py" --apply
 # The installer runs as root, so the parent-shell redirects intentionally own these files first.
 # shellcheck disable=SC2024
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
