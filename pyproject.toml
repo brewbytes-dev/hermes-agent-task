@@ -1,7 +1,7 @@
 [project]
 name = "hermes-agent-task"
-version = "0.2.0"
-description = "Production-hardened scheduled task runner and Hermes tool plugin"
+version = "1.1.0"
+description = "Hermes background-task plugin with automatic reply context restoration"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

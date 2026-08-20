@@ -9,6 +9,7 @@ structured result.json files under ~/.hermes/agent_runs/<short_id>/<run_id>/.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -151,6 +152,9 @@ def agent_task_reply_hook(*, event: Any, **kwargs: Any) -> dict | None:
 
 
 def _scripts_dir() -> Path:
+    bundled = Path(__file__).resolve().parent / "scripts"
+    if (bundled / "agent_task_runner.py").is_file():
+        return bundled
     return get_hermes_home() / "scripts"
 
 
@@ -172,12 +176,15 @@ def _run_runner(args: list[str], timeout: int = 180) -> Dict[str, Any]:
     if not runner.exists():
         return {"success": False, "error": f"agent_task_runner.py not found: {runner}"}
     try:
+        runner_env = dict(os.environ)
+        runner_env["AGENT_TASK_SCRIPTS_DIR"] = str(_scripts_dir())
         result = subprocess.run(
             [str(_runner_python()), str(runner)] + args,
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(runner.parent),
+            env=runner_env,
         )
         return {
             "success": result.returncode == 0,
@@ -256,6 +263,7 @@ def _task_cron_line(
     home = get_hermes_home()
     python = _managed_python_path()
     runner = _runner_path()
+    scripts_dir = _scripts_dir()
     log_path = home / "logs" / "agent-task" / f"{task_id}.log"
     command_guard = ""
     if timezone_name:
@@ -265,9 +273,13 @@ def _task_cron_line(
         schedule = f"{minute} * {day_of_month} {month} {day_of_week}"
         local_hour = f"{int(hour):02d}"
         command_guard = f'[ "$(TZ={shlex.quote(timezone_name)} date +\\%H)" = "{local_hour}" ] && '
+    scripts_env = ""
+    if scripts_dir.resolve() != (home / "scripts").resolve():
+        scripts_env = f"AGENT_TASK_SCRIPTS_DIR={shlex.quote(str(scripts_dir))} "
     return (
         f"{schedule} cd {shlex.quote(str(home))} && umask 077 && "
-        f"{command_guard}{shlex.quote(str(python))} {shlex.quote(str(runner))} run {shlex.quote(task_id)} "
+        f"{command_guard}{scripts_env}{shlex.quote(str(python))} {shlex.quote(str(runner))} "
+        f"run {shlex.quote(task_id)} "
         f"--deliver {shlex.quote(deliver)} --skip-if-empty --retry-failed --prune "
         f">>{shlex.quote(str(log_path))} 2>&1"
     )

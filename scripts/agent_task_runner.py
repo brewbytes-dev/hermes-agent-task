@@ -46,7 +46,7 @@ import fcntl
 _HERMES_HOME = Path(os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes")))
 TASKS_DIR = _HERMES_HOME / "agent_tasks"
 RUNS_DIR = _HERMES_HOME / "agent_runs"
-SCRIPTS_DIR = _HERMES_HOME / "scripts"
+SCRIPTS_DIR = Path(os.path.expanduser(os.environ.get("AGENT_TASK_SCRIPTS_DIR", str(_HERMES_HOME / "scripts"))))
 LOCKS_DIR = _HERMES_HOME / "agent_task_locks"
 LOGS_DIR = _HERMES_HOME / "logs" / "agent-task"
 REPLY_INDEX_PATH = _HERMES_HOME / "state" / "agent_task_reply_index.json"

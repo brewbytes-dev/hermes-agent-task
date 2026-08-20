@@ -37,7 +37,7 @@ if [[ -d "$plugin_dir" ]]; then
 fi
 for plugin_file in __init__.py agent_task.py plugin.yaml; do
   install -o "$hermes_user" -g "$hermes_group" -m 0644 \
-    "$source_root/plugin/$plugin_file" "$plugin_dir/$plugin_file"
+    "$source_root/$plugin_file" "$plugin_dir/$plugin_file"
 done
 
 if ! crontab -u "$hermes_user" -l >"$backup_dir/crontab.before" 2>/dev/null; then

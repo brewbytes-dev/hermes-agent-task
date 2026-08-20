@@ -16,7 +16,7 @@ def load_plugin(home: Path):
     constants = types.ModuleType("hermes_constants")
     constants.get_hermes_home = lambda: home
     sys.modules["hermes_constants"] = constants
-    spec = importlib.util.spec_from_file_location("agent_task_plugin_under_test", ROOT / "plugin" / "agent_task.py")
+    spec = importlib.util.spec_from_file_location("agent_task_plugin_under_test", ROOT / "agent_task.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -30,8 +30,8 @@ def load_plugin_package(home: Path):
     package_name = "agent_task_package_under_test"
     spec = importlib.util.spec_from_file_location(
         package_name,
-        ROOT / "plugin" / "__init__.py",
-        submodule_search_locations=[str(ROOT / "plugin")],
+        ROOT / "__init__.py",
+        submodule_search_locations=[str(ROOT)],
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -46,6 +46,8 @@ def test_cron_line_uses_managed_python_and_durable_log(tmp_path: Path) -> None:
     line = plugin._task_cron_line("newsletter-brief", "0 * * * *", deliver="telegram")
 
     assert str(tmp_path / "hermes-agent" / "venv" / "bin" / "python") in line
+    assert str(ROOT / "scripts" / "agent_task_runner.py") in line
+    assert f"AGENT_TASK_SCRIPTS_DIR={ROOT / 'scripts'}" in line
     assert str(tmp_path / "logs" / "agent-task" / "newsletter-brief.log") in line
     assert "python3 scripts/agent_task_runner.py" not in line
     assert "umask 077" in line
@@ -267,7 +269,8 @@ def test_plugin_registration_installs_reply_hook(tmp_path: Path) -> None:
     package.register(Context())
 
     assert registered["tools"][0]["name"] == "agent_task"
-    assert registered["hooks"] == [("pre_gateway_dispatch", package.agent_task_reply_hook)]
+    assert registered["hooks"][0][0] == "pre_gateway_dispatch"
+    assert registered["hooks"][0][1].__name__ == "agent_task_reply_hook"
 
 
 def test_read_defaults_to_latest_run_and_hides_storage_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

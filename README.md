@@ -1,12 +1,26 @@
 # Hermes agent-task
 
-Production-hardened scheduled task runner and Hermes tool plugin extracted from
-the live Hermes installation. The repository intentionally excludes bot tokens,
-Telegram destination IDs, task state, run output, and mailbox credentials.
+Production-hardened scheduled task runner and native Hermes plugin. The
+repository intentionally excludes bot tokens, Telegram destination IDs, task
+state, run output, and mailbox credentials.
+
+## Install as a Hermes plugin
+
+```bash
+hermes plugins install brewbytes-dev/hermes-agent-task
+hermes plugins enable agent-task
+hermes plugins doctor ~/.hermes/plugins/hermes-agent-task --ci
+```
+
+The native `plugin.yaml` and `__init__.py` live at repository root. A normal
+Hermes install therefore includes the bundled runner and collectors, while the
+host-specific deploy workflow below can continue placing runtime scripts in
+`$HERMES_HOME/scripts`.
 
 ## Runtime contract
 
 - Python 3.11 or newer. Scheduled runs use the managed Hermes venv explicitly.
+- No third-party Python dependency is installed into the shared Hermes runtime.
 - Task definitions remain in `$HERMES_HOME/agent_tasks/<task-id>/`.
 - Run output remains in `$HERMES_HOME/agent_runs/<short-id>/<run-id>/`.
 - Each task has a non-blocking process lock, so overlapping cron/manual runs fail
@@ -64,3 +78,7 @@ memory, gateway config, and both gateway services. Use
 The `agent_task` tool returns concise, human-oriented results. Low-level runner
 stdout/stderr, exit codes, paths, and full scheduling data are available only
 with `debug: true`, which should be used only for an explicit diagnostic request.
+
+## License
+
+MIT

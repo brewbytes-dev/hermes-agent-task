@@ -1,0 +1,14 @@
+name: agent-task
+version: 1.1.0
+manifest_version: 2
+api_version: 1
+description: "Useful background tasks with human notifications and automatic context restoration when a user replies."
+author: "brewbytes-dev"
+kind: standalone
+license: MIT
+homepage: https://github.com/brewbytes-dev/hermes-agent-task
+tags: [automation, background-tasks, telegram, context]
+provides_tools:
+  - agent_task
+provides_hooks:
+  - pre_gateway_dispatch
