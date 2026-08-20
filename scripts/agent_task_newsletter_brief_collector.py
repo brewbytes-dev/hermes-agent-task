@@ -19,6 +19,7 @@ import smtplib
 import ssl
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.policy import default
@@ -134,15 +135,47 @@ def _save_state(state: dict) -> None:
 
 
 def _connect(user: str, pass_cmd: str) -> imaplib.IMAP4_SSL:
-    conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-    conn.login(user, _password(pass_cmd))
-    return conn
+    try:
+        timeout = int(os.environ.get("AGENT_TASK_IMAP_TIMEOUT_SECONDS", "20"))
+    except ValueError:
+        timeout = 20
+    timeout = min(max(timeout, 5), 60)
+    last_error: Exception | None = None
+    for attempt in range(2):
+        conn = None
+        try:
+            conn = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=timeout)
+            conn.login(user, _password(pass_cmd))
+            return conn
+        except imaplib.IMAP4.error as exc:
+            raise RuntimeError("IMAP authentication failed") from exc
+        except OSError as exc:
+            last_error = exc
+            if conn is not None:
+                try:
+                    conn.shutdown()
+                except Exception:
+                    pass
+            if attempt == 0:
+                time.sleep(1)
+    raise RuntimeError(f"IMAP connection timed out after 2 attempts: {type(last_error).__name__}")
 
 
 def _search_sender_uids(conn: imaplib.IMAP4_SSL, sender: str) -> list[str]:
     typ, data = conn.uid("search", None, "FROM", f'"{sender}"')
     if typ != "OK" or not data:
         return []
+    return data[0].decode().split()
+
+
+def _search_senders_uids(conn: imaplib.IMAP4_SSL, senders: list[str]) -> list[str]:
+    """Use one Gmail raw OR query instead of one network round-trip per sender."""
+    if not senders:
+        return []
+    query = "{" + " ".join(f"from:{sender}" for sender in senders) + "}"
+    typ, data = conn.uid("search", None, "X-GM-RAW", f'"{query}"')
+    if typ != "OK" or not data:
+        raise RuntimeError("Gmail batch sender search failed")
     return data[0].decode().split()
 
 
@@ -218,9 +251,15 @@ def _forward_personal(state: dict) -> tuple[list[dict], list[str]]:
     try:
         conn.select("INBOX")
         candidates = []
-        for sender, label in FORWARD_SENDERS.items():
-            for uid in _search_sender_uids(conn, sender):
-                candidates.append((int(uid), uid, sender, label))
+        for uid in _search_senders_uids(conn, list(FORWARD_SENDERS)):
+            try:
+                msg = _fetch_message(conn, uid)
+                sender = parseaddr(msg.get("From", ""))[1].lower()
+                label = FORWARD_SENDERS.get(sender)
+                if label:
+                    candidates.append((int(uid), uid, sender, label, msg, _message_key(msg)))
+            except Exception as exc:
+                errors.append(f"UID {uid}: {exc}")
         candidates.sort()
         seen = set(state.get("forwarded", []))
 
@@ -235,22 +274,14 @@ def _forward_personal(state: dict) -> tuple[list[dict], list[str]]:
                 if os.getenv("NEWSLETTER_FORWARD_LATEST", "") in {"1", "true", "yes"}
                 else set()
             )
-            for _, uid, _, _ in candidates:
+            for _, uid, _, _, _, key in candidates:
                 if uid not in latest_uids:
-                    try:
-                        seen.add(_message_key(_fetch_message(conn, uid)))
-                    except Exception as exc:
-                        errors.append(str(exc))
+                    seen.add(key)
             state["personal_initialized"] = True
 
-        for _, uid, sender, label in candidates:
+        for _, uid, sender, label, msg, key in candidates:
             try:
-                msg = _fetch_message(conn, uid)
-                key = _message_key(msg)
                 if key in seen:
-                    continue
-                actual = parseaddr(msg.get("From", ""))[1].lower()
-                if actual != sender:
                     continue
                 # Drift mixes order notifications and marketing on one From address.
                 # Keep anything plausibly transactional in the personal inbox.
@@ -275,45 +306,47 @@ def _forward_personal(state: dict) -> tuple[list[dict], list[str]]:
     return forwarded, errors
 
 
+def _is_briefing_time(force_brief: bool = False) -> bool:
+    local_hour = datetime.now(ZoneInfo("America/Los_Angeles")).hour
+    return force_brief or os.getenv("NEWSLETTER_BRIEF_FORCE", "") in {"1", "true", "yes"} or local_hour == 8
+
+
 def _collect_agent_messages(state: dict, force_brief: bool = False) -> tuple[list[dict], list[str], bool]:
     errors, messages = [], []
+    briefing_time = _is_briefing_time(force_brief)
+    if state.get("agent_initialized") and not briefing_time:
+        return [], errors, False
+
     conn = _connect(AGENT_EMAIL, AGENT_PASS_CMD)
     try:
         conn.select("INBOX")
         candidates = []
         search_senders = {**MONITOR_SENDERS, PERSONAL_EMAIL: "Newsletter relay"}
-        for sender, label in search_senders.items():
-            for uid in _search_sender_uids(conn, sender):
-                candidates.append((int(uid), uid, sender, label))
+        for uid in _search_senders_uids(conn, list(search_senders)):
+            try:
+                msg = _fetch_message(conn, uid)
+                actual = parseaddr(msg.get("From", ""))[1].lower()
+                relay_source = (msg.get("X-Hermes-Newsletter-Source") or "").lower()
+                label = MONITOR_SENDERS.get(relay_source) or search_senders.get(actual)
+                if label:
+                    candidates.append((int(uid), uid, actual, label, relay_source, msg, _message_key(msg)))
+            except Exception as exc:
+                errors.append(f"UID {uid}: {exc}")
         candidates.sort()
         briefed = set(state.get("briefed", []))
         if not state.get("agent_initialized"):
             # Baseline confirmations and old directly-subscribed messages. Relayed smoke-test
             # messages remain visible but are not replayed to Telegram.
-            for _, uid, _, _ in candidates:
-                try:
-                    briefed.add(_message_key(_fetch_message(conn, uid)))
-                except Exception as exc:
-                    errors.append(str(exc))
+            for _, _, _, _, _, _, key in candidates:
+                briefed.add(key)
             state["agent_initialized"] = True
             state["briefed"] = sorted(briefed)
             return [], errors, True
 
-        local_hour = datetime.now(ZoneInfo("America/Los_Angeles")).hour
-        briefing_time = (
-            force_brief or os.getenv("NEWSLETTER_BRIEF_FORCE", "") in {"1", "true", "yes"} or local_hour == 8
-        )
-        if not briefing_time:
-            return [], errors, False
-
-        for _, uid, sender, label in candidates:
+        for _, _, actual, label, relay_source, msg, key in candidates:
             try:
-                msg = _fetch_message(conn, uid)
-                key = _message_key(msg)
                 if key in briefed:
                     continue
-                actual = parseaddr(msg.get("From", ""))[1].lower()
-                relay_source = (msg.get("X-Hermes-Newsletter-Source") or "").lower()
                 if actual not in MONITOR_SENDERS and relay_source not in MONITOR_SENDERS:
                     continue
                 messages.append(
