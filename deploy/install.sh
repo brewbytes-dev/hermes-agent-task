@@ -43,6 +43,12 @@ sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
   "$managed_python" -m py_compile "$hermes_home"/scripts/agent_task_*.py "$plugin_target"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" PYTHONPATH="$hermes_home/hermes-agent" \
   "$managed_python" "$source_root/deploy/migrate_crontab.py" --apply
+# The installer runs as root, so the parent-shell redirect intentionally owns this file first.
+# shellcheck disable=SC2024
+sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
+  "$managed_python" "$hermes_home/scripts/agent_task_runner.py" prune >"$backup_dir/retention-dry-run.json"
+chown "$hermes_user:$hermes_group" "$backup_dir/retention-dry-run.json"
+chmod 0600 "$backup_dir/retention-dry-run.json"
 
 install -o root -g root -m 0644 "$source_root/deploy/agent-task-health.service" /etc/systemd/system/agent-task-health.service
 install -o root -g root -m 0644 "$source_root/deploy/agent-task-health.timer" /etc/systemd/system/agent-task-health.timer

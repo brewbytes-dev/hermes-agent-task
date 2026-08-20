@@ -53,6 +53,7 @@ LOGS_DIR = _HERMES_HOME / "logs" / "agent-task"
 DEFAULT_RETENTION_DAYS = 45
 DEFAULT_MAX_RUNS_PER_TASK = 200
 DEFAULT_MIN_RUNS_PER_TASK = 10
+AGENT_TASK_VERSION = "0.1.0"
 
 CALLBACK_PREFIX = "ar:"  # "agent_run" — compact for Telegram 64-char limit
 
@@ -681,6 +682,7 @@ def build_health_report() -> dict:
 
     return {
         "healthy": not any(check["status"] == "fail" for check in checks),
+        "version": AGENT_TASK_VERSION,
         "generated_at": _utcnow().isoformat(),
         "hermes_home": str(_HERMES_HOME),
         "checks": checks,

@@ -156,6 +156,7 @@ def test_doctor_reports_missing_managed_python(tmp_path: Path) -> None:
 
     report = runner.build_health_report()
 
+    assert report["version"] == "0.1.0"
     python_check = next(check for check in report["checks"] if check["name"] == "managed_python")
     assert python_check["status"] == "fail"
     assert report["healthy"] is False
