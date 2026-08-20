@@ -1,0 +1,10 @@
+/home/hermes/.hermes/logs/agent-task/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su hermes hermes
+}

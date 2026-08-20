@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hermes agent-task health check every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+RandomizedDelaySec=30s
+Unit=agent-task-health.service
+
+[Install]
+WantedBy=timers.target

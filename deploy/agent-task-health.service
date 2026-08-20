@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes agent-task production health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+Environment=HERMES_HOME=/home/hermes/.hermes
+WorkingDirectory=/home/hermes/.hermes
+ExecStart=/home/hermes/.hermes/hermes-agent/venv/bin/python /home/hermes/.hermes/scripts/agent_task_runner.py doctor
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
