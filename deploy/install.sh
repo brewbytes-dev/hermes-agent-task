@@ -26,12 +26,17 @@ for source in "$source_root"/scripts/agent_task_*.py; do
   install -o "$hermes_user" -g "$hermes_group" -m 0755 "$source" "$target"
 done
 
-plugin_target="$hermes_home/plugins/agent-task/agent_task.py"
-install -d -o "$hermes_user" -g "$hermes_group" -m 0755 "$(dirname "$plugin_target")"
-if [[ -f "$plugin_target" ]]; then
-  cp -a "$plugin_target" "$backup_dir/plugin_agent_task.py"
+plugin_dir="$hermes_home/plugins/agent-task"
+plugin_target="$plugin_dir/agent_task.py"
+install -d -o "$hermes_user" -g "$hermes_group" -m 0755 "$plugin_dir"
+if [[ -d "$plugin_dir" ]]; then
+  install -d -o "$hermes_user" -g "$hermes_group" -m 0700 "$backup_dir/plugin"
+  cp -a "$plugin_dir"/. "$backup_dir/plugin/"
 fi
-install -o "$hermes_user" -g "$hermes_group" -m 0644 "$source_root/plugin/agent_task.py" "$plugin_target"
+for plugin_file in __init__.py agent_task.py plugin.yaml; do
+  install -o "$hermes_user" -g "$hermes_group" -m 0644 \
+    "$source_root/plugin/$plugin_file" "$plugin_dir/$plugin_file"
+done
 
 if ! crontab -u "$hermes_user" -l >"$backup_dir/crontab.before" 2>/dev/null; then
   : >"$backup_dir/crontab.before"
@@ -40,15 +45,18 @@ chown "$hermes_user:$hermes_group" "$backup_dir/crontab.before"
 chmod 0600 "$backup_dir/crontab.before"
 
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
-  "$managed_python" -m py_compile "$hermes_home"/scripts/agent_task_*.py "$plugin_target"
+  "$managed_python" -m py_compile "$hermes_home"/scripts/agent_task_*.py "$plugin_dir/__init__.py" "$plugin_target"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" PYTHONPATH="$hermes_home/hermes-agent" \
   "$managed_python" "$source_root/deploy/migrate_crontab.py" --apply
-# The installer runs as root, so the parent-shell redirect intentionally owns this file first.
+# The installer runs as root, so the parent-shell redirects intentionally own these files first.
+# shellcheck disable=SC2024
+sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
+  "$managed_python" "$hermes_home/scripts/agent_task_runner.py" rebuild-reply-index >"$backup_dir/reply-index-rebuild.json"
 # shellcheck disable=SC2024
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
   "$managed_python" "$hermes_home/scripts/agent_task_runner.py" prune >"$backup_dir/retention-dry-run.json"
-chown "$hermes_user:$hermes_group" "$backup_dir/retention-dry-run.json"
-chmod 0600 "$backup_dir/retention-dry-run.json"
+chown "$hermes_user:$hermes_group" "$backup_dir/reply-index-rebuild.json" "$backup_dir/retention-dry-run.json"
+chmod 0600 "$backup_dir/reply-index-rebuild.json" "$backup_dir/retention-dry-run.json"
 
 install -o root -g root -m 0644 "$source_root/deploy/agent-task-health.service" /etc/systemd/system/agent-task-health.service
 install -o root -g root -m 0644 "$source_root/deploy/agent-task-health.timer" /etc/systemd/system/agent-task-health.timer

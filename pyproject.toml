@@ -1,6 +1,6 @@
 [project]
 name = "hermes-agent-task"
-version = "0.1.0"
+version = "0.2.0"
 description = "Production-hardened scheduled task runner and Hermes tool plugin"
 requires-python = ">=3.11"
 

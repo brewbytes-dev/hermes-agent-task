@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -18,6 +19,23 @@ def load_plugin(home: Path):
     spec = importlib.util.spec_from_file_location("agent_task_plugin_under_test", ROOT / "plugin" / "agent_task.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_plugin_package(home: Path):
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: home
+    sys.modules["hermes_constants"] = constants
+    package_name = "agent_task_package_under_test"
+    spec = importlib.util.spec_from_file_location(
+        package_name,
+        ROOT / "plugin" / "__init__.py",
+        submodule_search_locations=[str(ROOT / "plugin")],
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -83,3 +101,220 @@ def test_cron_line_rejects_shell_injection(task_id: str, schedule: str, deliver:
 
     with pytest.raises(ValueError):
         plugin._task_cron_line(task_id, schedule, deliver=deliver)
+
+
+def test_reply_hook_restores_full_run_context_without_showing_it_in_notification(tmp_path: Path) -> None:
+    plugin = load_plugin(tmp_path)
+    run_id = "20260820T030000-abc123"
+    task_dir = tmp_path / "agent_tasks" / "package-tracker"
+    run_dir = tmp_path / "agent_runs" / "pkg" / run_id
+    state_dir = tmp_path / "state"
+    task_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    (task_dir / "task.json").write_text(
+        json.dumps(
+            {
+                "task_id": "package-tracker",
+                "short_task_id": "pkg",
+                "description": "Посылки и доставки",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run.json").write_text(
+        json.dumps({"task_id": "package-tracker", "run_id": run_id, "status": "ok"}),
+        encoding="utf-8",
+    )
+    (run_dir / "prompt_context.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "summary": "Нашлась одна новая доставка.",
+                "shipments": [{"carrier": "UPS", "state": "out for delivery"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "result.json").write_text(
+        json.dumps({"status": "ok", "tracking": [{"carrier": "UPS", "eta": "today"}]}),
+        encoding="utf-8",
+    )
+    (state_dir / "agent_task_reply_index.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    '["12345","42"]': {
+                        "task_id": "package-tracker",
+                        "short_task_id": "pkg",
+                        "run_id": run_id,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    event = types.SimpleNamespace(
+        text="А когда привезут?",
+        reply_to_message_id="42",
+        source=types.SimpleNamespace(platform="telegram", chat_id="12345"),
+    )
+
+    result = plugin.agent_task_reply_hook(event=event)
+
+    assert result["action"] == "rewrite"
+    assert "А когда привезут?" in result["text"]
+    assert "Нашлась одна новая доставка." in result["text"]
+    assert '"eta": "today"' in result["text"]
+    assert "trusted context supplied by the agent-task plugin" in result["text"]
+
+
+def test_reply_hook_never_crosses_chat_boundary(tmp_path: Path) -> None:
+    plugin = load_plugin(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "agent_task_reply_index.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    '["12345","42"]': {
+                        "task_id": "sample-task",
+                        "short_task_id": "sample",
+                        "run_id": "20260820T030000-abc123",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    event = types.SimpleNamespace(
+        text="Продолжим",
+        reply_to_message_id="42",
+        source=types.SimpleNamespace(platform="telegram", chat_id="99999"),
+    )
+
+    assert plugin.agent_task_reply_hook(event=event) is None
+
+
+def test_reply_hook_does_not_attach_context_before_gateway_authorization(tmp_path: Path) -> None:
+    plugin = load_plugin(tmp_path)
+    event = types.SimpleNamespace(
+        text="Продолжим",
+        reply_to_message_id="42",
+        source=types.SimpleNamespace(platform="telegram", chat_id="12345"),
+    )
+    gateway = types.SimpleNamespace(_is_user_authorized=lambda source: False)
+
+    assert plugin.agent_task_reply_hook(event=event, gateway=gateway) is None
+
+
+def test_default_tool_response_hides_runner_internals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = load_plugin(tmp_path)
+    monkeypatch.setattr(
+        plugin,
+        "_run_runner",
+        lambda *args, **kwargs: {
+            "success": True,
+            "exit_code": 0,
+            "stdout": json.dumps(
+                {
+                    "healthy": True,
+                    "checks": [{"name": "managed_python", "status": "pass", "detail": "/secret/path"}],
+                }
+            ),
+            "stderr": "technical warning",
+        },
+    )
+
+    response = json.loads(plugin.agent_task_tool({"action": "health"}))
+
+    assert response == {"success": True, "message": "Все фоновые задачи работают нормально."}
+
+
+def test_debug_tool_response_keeps_runner_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = load_plugin(tmp_path)
+    monkeypatch.setattr(
+        plugin,
+        "_run_runner",
+        lambda *args, **kwargs: {
+            "success": True,
+            "exit_code": 0,
+            "stdout": '{"healthy": true}',
+            "stderr": "technical warning",
+        },
+    )
+
+    response = json.loads(plugin.agent_task_tool({"action": "health", "debug": True}))
+
+    assert response["success"] is True
+    assert response["debug"]["exit_code"] == 0
+    assert response["debug"]["stderr"] == "technical warning"
+
+
+def test_plugin_registration_installs_reply_hook(tmp_path: Path) -> None:
+    package = load_plugin_package(tmp_path)
+    registered = {"tools": [], "hooks": []}
+
+    class Context:
+        def register_tool(self, **kwargs):
+            registered["tools"].append(kwargs)
+
+        def register_hook(self, name, callback):
+            registered["hooks"].append((name, callback))
+
+    package.register(Context())
+
+    assert registered["tools"][0]["name"] == "agent_task"
+    assert registered["hooks"] == [("pre_gateway_dispatch", package.agent_task_reply_hook)]
+
+
+def test_read_defaults_to_latest_run_and_hides_storage_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = load_plugin(tmp_path)
+    run_id = "20260820T030000-abc123"
+    run_dir = tmp_path / "agent_runs" / "sample" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+    (run_dir / "prompt_context.json").write_text(
+        json.dumps({"status": "ok", "summary": "Контекст сохранён."}), encoding="utf-8"
+    )
+    (run_dir / "result.json").write_text(json.dumps({"answer": 42}), encoding="utf-8")
+    monkeypatch.setattr(
+        plugin,
+        "_run_runner",
+        lambda *args, **kwargs: {
+            "success": True,
+            "exit_code": 0,
+            "stdout": json.dumps(
+                {"task_id": "sample-task", "short_task_id": "sample", "description": "Полезная задача"}
+            ),
+            "stderr": "",
+        },
+    )
+
+    response = json.loads(plugin.agent_task_tool({"action": "read", "task_id": "sample-task"}))
+
+    assert response["success"] is True
+    assert response["summary"] == "Контекст сохранён."
+    assert response["result"] == {"answer": 42}
+    assert str(tmp_path) not in json.dumps(response)
+
+
+def test_read_rejects_run_path_traversal_without_leaking_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = load_plugin(tmp_path)
+    monkeypatch.setattr(
+        plugin,
+        "_run_runner",
+        lambda *args, **kwargs: {
+            "success": True,
+            "stdout": json.dumps({"task_id": "sample-task", "short_task_id": "sample"}),
+            "stderr": "",
+        },
+    )
+
+    response = json.loads(
+        plugin.agent_task_tool({"action": "read", "task_id": "sample-task", "run_id": "../../secret"})
+    )
+
+    assert response == {"success": False, "message": "Не удалось определить нужный запуск."}

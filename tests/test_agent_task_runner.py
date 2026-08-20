@@ -88,7 +88,7 @@ def test_delivery_status_is_persisted_without_overwriting_run_status(tmp_path: P
         "sample-task",
         run["run_id"],
         status="delivered",
-        details={"target": "telegram_home", "message_id": 42},
+        details={"target": "telegram_home", "chat_id": "12345", "message_id": 42},
     )
 
     data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
@@ -96,6 +96,52 @@ def test_delivery_status_is_persisted_without_overwriting_run_status(tmp_path: P
     assert data["delivery"]["status"] == "delivered"
     assert data["delivery"]["attempts"] == 1
     assert data["delivery"]["message_id"] == 42
+    assert data["delivery"]["reply_context"] == "ready"
+
+    reference = runner.lookup_reply_reference("12345", "42")
+    assert reference == {
+        "task_id": "sample-task",
+        "short_task_id": "sample",
+        "run_id": run["run_id"],
+    }
+
+
+def test_reply_reference_is_scoped_to_the_delivery_chat(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    create_task(runner)
+    run = runner.create_run("sample-task")
+    runner.save_run_result(run["run_dir"], {"status": "ok"})
+
+    runner.record_delivery_status(
+        "sample-task",
+        run["run_id"],
+        status="delivered",
+        details={"chat_id": "12345", "message_id": 42},
+    )
+
+    assert runner.lookup_reply_reference("other-chat", "42") is None
+
+
+def test_reply_index_backfills_retained_task_config_deliveries(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    task = create_task(runner)
+    task["delivery"] = {"platform": "telegram", "chat_id": "12345"}
+    (runner.TASKS_DIR / "sample-task" / "task.json").write_text(json.dumps(task), encoding="utf-8")
+    run = runner.create_run("sample-task")
+    runner.save_run_result(run["run_dir"], {"status": "ok"})
+    run_data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
+    run_data["delivery"] = {
+        "status": "delivered",
+        "target": "task_config",
+        "message_id": 42,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    Path(run["run_file"]).write_text(json.dumps(run_data), encoding="utf-8")
+
+    report = runner.rebuild_reply_index()
+
+    assert report["added"] == 1
+    assert runner.lookup_reply_reference("12345", "42")["run_id"] == run["run_id"]
 
 
 def test_task_lock_rejects_overlapping_run(tmp_path: Path) -> None:
@@ -117,7 +163,12 @@ def test_retry_failed_delivery_uses_persisted_outbox(tmp_path: Path, monkeypatch
     monkeypatch.setattr(
         runner,
         "deliver_task_output",
-        lambda *args, **kwargs: {"success": True, "target": "telegram_home", "message_id": 7},
+        lambda *args, **kwargs: {
+            "success": True,
+            "target": "telegram_home",
+            "chat_id": "12345",
+            "message_id": 7,
+        },
     )
 
     report = runner.retry_failed_deliveries("sample-task")
@@ -126,6 +177,25 @@ def test_retry_failed_delivery_uses_persisted_outbox(tmp_path: Path, monkeypatch
     data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
     assert data["delivery"]["status"] == "delivered"
     assert data["delivery"]["attempts"] == 2
+
+
+def test_notification_is_human_facing_and_hides_run_metadata(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    message = runner._format_task_message(
+        {"task_id": "package-tracker", "description": "Посылки и доставки"},
+        {
+            "run_info": {"task_id": "package-tracker", "run_id": "20260820T030000-abc123"},
+            "prompt_context": {"status": "ok", "summary": "Нашлась одна новая доставка."},
+        },
+    )
+
+    assert "Посылки и доставки" in message
+    assert "Нашлась одна новая доставка." in message
+    assert "Ответьте на это сообщение" in message
+    assert "package-tracker" not in message
+    assert "run_id" not in message
+    assert "20260820T030000-abc123" not in message
+    assert ": ok" not in message
 
 
 def test_telegram_api_uses_gateway_local_base_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,7 +259,7 @@ def test_doctor_reports_missing_managed_python(tmp_path: Path) -> None:
 
     report = runner.build_health_report()
 
-    assert report["version"] == "0.1.0"
+    assert report["version"] == "0.2.0"
     python_check = next(check for check in report["checks"] if check["name"] == "managed_python")
     assert python_check["status"] == "fail"
     assert report["healthy"] is False
@@ -214,4 +284,28 @@ def test_doctor_fails_stale_incomplete_run(tmp_path: Path) -> None:
     run_check = next(check for check in report["checks"] if check["name"] == "last_run:sample-task")
     assert run_check["status"] == "fail"
     assert "stale created" in run_check["detail"]
+    assert report["healthy"] is False
+
+
+def test_doctor_fails_delivered_run_without_reply_context(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    task = create_task(runner)
+    task["delivery"] = {"platform": "telegram", "chat_id": "12345"}
+    (runner.TASKS_DIR / "sample-task" / "task.json").write_text(json.dumps(task), encoding="utf-8")
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "collector.py").write_text("print('{}')\n", encoding="utf-8")
+    managed_python = tmp_path / "hermes-agent" / "venv" / "bin" / "python"
+    managed_python.parent.mkdir(parents=True)
+    managed_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    managed_python.chmod(0o755)
+    run = runner.create_run("sample-task")
+    runner.save_run_result(run["run_dir"], {"status": "ok"})
+    run_data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
+    run_data["delivery"] = {"status": "delivered", "target": "task_config", "message_id": 42}
+    Path(run["run_file"]).write_text(json.dumps(run_data), encoding="utf-8")
+
+    report = runner.build_health_report()
+
+    context_check = next(check for check in report["checks"] if check["name"] == "reply_context:sample-task")
+    assert context_check["status"] == "fail"
     assert report["healthy"] is False

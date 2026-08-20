@@ -21,7 +21,13 @@ for source in "$backup_dir"/agent_task_*.py; do
   [[ -e "$source" ]] || continue
   install -o "$hermes_user" -g "$hermes_group" -m 0755 "$source" "$hermes_home/scripts/$(basename "$source")"
 done
-if [[ -f "$backup_dir/plugin_agent_task.py" ]]; then
+if [[ -d "$backup_dir/plugin" ]]; then
+  for plugin_file in __init__.py agent_task.py plugin.yaml; do
+    [[ -f "$backup_dir/plugin/$plugin_file" ]] || continue
+    install -o "$hermes_user" -g "$hermes_group" -m 0644 \
+      "$backup_dir/plugin/$plugin_file" "$hermes_home/plugins/agent-task/$plugin_file"
+  done
+elif [[ -f "$backup_dir/plugin_agent_task.py" ]]; then
   install -o "$hermes_user" -g "$hermes_group" -m 0644 \
     "$backup_dir/plugin_agent_task.py" "$hermes_home/plugins/agent-task/agent_task.py"
 fi

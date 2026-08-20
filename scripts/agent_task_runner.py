@@ -49,16 +49,20 @@ RUNS_DIR = _HERMES_HOME / "agent_runs"
 SCRIPTS_DIR = _HERMES_HOME / "scripts"
 LOCKS_DIR = _HERMES_HOME / "agent_task_locks"
 LOGS_DIR = _HERMES_HOME / "logs" / "agent-task"
+REPLY_INDEX_PATH = _HERMES_HOME / "state" / "agent_task_reply_index.json"
+REPLY_INDEX_LOCK_PATH = _HERMES_HOME / "state" / "agent_task_reply_index.lock"
 
 DEFAULT_RETENTION_DAYS = 45
 DEFAULT_MAX_RUNS_PER_TASK = 200
 DEFAULT_MIN_RUNS_PER_TASK = 10
-AGENT_TASK_VERSION = "0.1.0"
+DEFAULT_MAX_REPLY_REFERENCES = 2000
+AGENT_TASK_VERSION = "0.2.0"
 
 CALLBACK_PREFIX = "ar:"  # "agent_run" — compact for Telegram 64-char limit
 
 _TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SHORT_TASK_ID_RE = re.compile(r"^[a-z0-9]{2,8}$")
+_RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-[a-z0-9]{6}$")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,6 +130,105 @@ def _short_id(length: int = 6) -> str:
     """Generate a short alphanumeric ID for run uniqueness."""
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _reply_reference_key(chat_id: str, message_id: str) -> str:
+    """Build the stable, chat-scoped key shared with the Hermes plugin hook."""
+    return json.dumps([str(chat_id), str(message_id)], ensure_ascii=False, separators=(",", ":"))
+
+
+@contextmanager
+def _reply_index_lock():
+    """Serialize reply-index updates from independent cron processes."""
+    _ensure_dir(REPLY_INDEX_LOCK_PATH.parent)
+    with REPLY_INDEX_LOCK_PATH.open("a+", encoding="utf-8") as handle:
+        os.chmod(REPLY_INDEX_LOCK_PATH, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def record_reply_reference(task_id: str, run_id: str, chat_id: str, message_id: str) -> None:
+    """Persist the invisible Telegram message -> task run continuation link."""
+    run_ctx = read_run(task_id, run_id)
+    if not run_ctx:
+        raise ValueError(f"Run not found: task_id={task_id} run_id={run_id}")
+    task = run_ctx["task"] or {}
+    entry = {
+        "task_id": task_id,
+        "short_task_id": task.get("short_task_id"),
+        "run_id": run_id,
+        "recorded_at": _utcnow().isoformat(),
+    }
+    with _reply_index_lock():
+        data = _read_json(REPLY_INDEX_PATH) or {}
+        entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
+        entries[_reply_reference_key(chat_id, message_id)] = entry
+        if len(entries) > DEFAULT_MAX_REPLY_REFERENCES:
+            overflow = len(entries) - DEFAULT_MAX_REPLY_REFERENCES
+            oldest = sorted(entries, key=lambda key: str(entries[key].get("recorded_at") or ""))[:overflow]
+            for key in oldest:
+                entries.pop(key, None)
+        _write_json(REPLY_INDEX_PATH, {"version": 1, "entries": entries})
+
+
+def lookup_reply_reference(chat_id: str, message_id: str) -> Optional[dict]:
+    """Resolve a delivery reference without exposing storage details."""
+    data = _read_json(REPLY_INDEX_PATH) or {}
+    entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
+    entry = entries.get(_reply_reference_key(chat_id, message_id))
+    if not isinstance(entry, dict):
+        return None
+    core = {key: entry.get(key) for key in ("task_id", "short_task_id", "run_id")}
+    return core if all(core.values()) else None
+
+
+def rebuild_reply_index() -> dict:
+    """Backfill continuation links for retained messages delivered before v1.1."""
+    recovered: dict[str, dict] = {}
+    for task in list_task_definitions():
+        task_id = task.get("task_id")
+        short_task_id = task.get("short_task_id")
+        if not task_id or not short_task_id:
+            continue
+        configured_chat_id = (task.get("delivery") or {}).get("chat_id")
+        runs_dir = RUNS_DIR / str(short_task_id)
+        if not runs_dir.exists():
+            continue
+        for run_dir in runs_dir.iterdir():
+            if not run_dir.is_dir() or not _RUN_ID_RE.fullmatch(run_dir.name):
+                continue
+            run = _read_json(run_dir / "run.json") or {}
+            delivery = run.get("delivery") if isinstance(run.get("delivery"), dict) else {}
+            if delivery.get("status") != "delivered" or delivery.get("message_id") is None:
+                continue
+            chat_id = delivery.get("chat_id")
+            if chat_id is None and delivery.get("target") == "task_config":
+                chat_id = configured_chat_id
+            if chat_id is None:
+                continue
+            key = _reply_reference_key(str(chat_id), str(delivery["message_id"]))
+            recovered[key] = {
+                "task_id": str(task_id),
+                "short_task_id": str(short_task_id),
+                "run_id": run_dir.name,
+                "recorded_at": delivery.get("updated_at") or run.get("completed_at") or run.get("created_at") or "",
+            }
+
+    with _reply_index_lock():
+        data = _read_json(REPLY_INDEX_PATH) or {}
+        entries = data.get("entries") if isinstance(data.get("entries"), dict) else {}
+        before = len(entries)
+        entries.update(recovered)
+        if len(entries) > DEFAULT_MAX_REPLY_REFERENCES:
+            overflow = len(entries) - DEFAULT_MAX_REPLY_REFERENCES
+            oldest = sorted(entries, key=lambda key: str(entries[key].get("recorded_at") or ""))[:overflow]
+            for key in oldest:
+                entries.pop(key, None)
+        _write_json(REPLY_INDEX_PATH, {"version": 1, "entries": entries})
+    return {"success": True, "recovered": len(recovered), "added": max(len(entries) - before, 0), "total": len(entries)}
 
 
 class TaskAlreadyRunning(RuntimeError):
@@ -483,9 +586,18 @@ def record_delivery_status(
         "attempts": attempts,
         "updated_at": _utcnow().isoformat(),
     }
-    for key in ("target", "thread_id", "message_id", "reason"):
+    for key in ("target", "chat_id", "thread_id", "message_id", "reason"):
         if details and details.get(key) is not None:
             delivery[key] = details[key]
+    if status == "delivered" and details and details.get("chat_id") is not None and details.get("message_id") is not None:
+        try:
+            record_reply_reference(task_id, run_id, str(details["chat_id"]), str(details["message_id"]))
+            delivery["reply_context"] = "ready"
+        except Exception as exc:
+            # Sending already succeeded. Do not retry and duplicate the Telegram
+            # message; make the degraded continuation state observable instead.
+            delivery["reply_context"] = "unavailable"
+            delivery["reply_context_error"] = str(exc)[:500]
     if error:
         delivery["error"] = str(error)[:2000]
     run_data["delivery"] = delivery
@@ -695,6 +807,17 @@ def build_health_report() -> dict:
             add(f"last_delivery:{task_id}", "ok", f"{delivery.get('status')} run {recent[0].name}")
         else:
             add(f"last_delivery:{task_id}", "warn", f"legacy run {recent[0].name} has no delivery state")
+        if delivery.get("status") == "delivered" and delivery.get("message_id") is not None:
+            chat_id = delivery.get("chat_id")
+            if chat_id is None and delivery.get("target") == "task_config":
+                chat_id = (task.get("delivery") or {}).get("chat_id")
+            reference = lookup_reply_reference(str(chat_id), str(delivery["message_id"])) if chat_id else None
+            ready = bool(reference and reference.get("run_id") == recent[0].name)
+            add(
+                f"reply_context:{task_id}",
+                "ok" if ready else "fail",
+                "ready" if ready else "missing continuation link",
+            )
 
     return {
         "healthy": not any(check["status"] == "fail" for check in checks),
@@ -848,26 +971,18 @@ def _resolve_telegram_target(
 
 def _format_task_message(task: dict, collector_output: dict) -> str:
     """Create a concise user-facing notification from collector output."""
-    run_info = collector_output.get("run_info") or {}
     prompt_context = collector_output.get("prompt_context") or {}
-    task_id = run_info.get("task_id") or task.get("task_id", "agent-task")
-    run_id = run_info.get("run_id", "?")
-    status = prompt_context.get("status", "?")
-    summary = str(prompt_context.get("summary") or "No summary.")
+    status = str(prompt_context.get("status") or "").lower()
+    summary = str(prompt_context.get("summary") or "Готово.")
+    summary = re.sub(r"\s+(?:Markdown|Knowledge inbox):\s+/\S+", "", summary, flags=re.IGNORECASE)
+    summary = "\n".join(
+        line for line in summary.splitlines() if not re.match(r"^\s*(?:run_id|schema_id|path|file)\s*:", line, re.I)
+    ).strip()
     if len(summary) > 3400:
         summary = summary[:3397].rstrip() + "..."
-    changes = prompt_context.get("changes_count")
-    shipments = prompt_context.get("shipments_count")
-
-    title = f"⏱️ {task_id}: {status}"
-    if changes is not None:
-        title += f" · changes: {changes}"
-    if shipments is not None:
-        title += f" · items: {shipments}"
-    footer = f"run_id: {run_id}"
-    if run_id and run_id != "?":
-        footer += "\n\nЧтобы продолжить: ответь reply на это сообщение."
-    return f"{title}\n{summary}\n\n{footer}"
+    title = str(task.get("display_name") or task.get("description") or "Фоновая задача").strip()
+    icon = "⚠️" if status in {"error", "failed", "failure"} else "📬"
+    return f"{icon} {title}\n\n{summary}\n\nОтветьте на это сообщение, чтобы продолжить."
 
 
 def _read_collector_output_from_run(task_id: str, run_id: str) -> dict:
@@ -1221,6 +1336,7 @@ def cli_main() -> None:
     prune_p.add_argument("--apply", action="store_true", help="Delete candidates; default is dry-run")
 
     sub.add_parser("doctor", help="Print a production health report")
+    sub.add_parser("rebuild-reply-index", help="Backfill Telegram reply continuation links from retained runs")
 
     # deliver existing run
     deliver_p = sub.add_parser("deliver", help="Deliver an existing run to the configured Telegram target")
@@ -1416,6 +1532,9 @@ def cli_main() -> None:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         if not report["healthy"]:
             sys.exit(1)
+
+    elif args.command == "rebuild-reply-index":
+        print(json.dumps(rebuild_reply_index(), indent=2, ensure_ascii=False))
 
     elif args.command == "set-delivery":
         task = read_task_definition(args.task_id)

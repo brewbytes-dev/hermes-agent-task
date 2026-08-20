@@ -11,6 +11,10 @@
 - Cron entries use the managed Python, durable logs, failed-delivery retry,
   retention, and one managed marker per task.
 - `agent-task-health.timer` is active and its service has a successful result.
+- The plugin package registers both the `agent_task` tool and the
+  `pre_gateway_dispatch` continuation hook.
+- Default tool responses omit runner stdout/stderr, exit codes, and paths;
+  `debug: true` is the explicit diagnostic escape hatch.
 
 ## Live delivery gate
 
@@ -19,7 +23,12 @@ Use an existing run and its configured task topic. Confirm all of the following:
 1. `deliver` exits zero and returns a Telegram message ID.
 2. `run.json.delivery.status` is `delivered` and `attempts` increased.
 3. The notification appears in the intended Telegram topic.
-4. Reply continuation still routes through the normal Hermes reply path.
+4. `run.json.delivery.reply_context` is `ready`, and the reply index contains
+   the exact chat/message pair.
+5. A synthetic dispatch through Hermes rewrites the user reply with the matching
+   prompt context while a different chat/message pair receives no context.
+6. A real Telegram reply answers from the originating result without asking the
+   user for a task ID, run ID, path, or repeated context.
 
 Do not use collector/build success alone as delivery evidence.
 
