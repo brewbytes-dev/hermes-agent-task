@@ -672,6 +672,22 @@ def build_health_report() -> dict:
             add(f"last_run:{task_id}", "warn", "no runs")
             continue
         run_data = _read_json(recent[0] / "run.json") or {}
+        run_status = str(run_data.get("status") or "unknown")
+        if run_status in {"error", "failed", "timeout"}:
+            add(f"last_run:{task_id}", "fail", f"{run_status} run {recent[0].name}")
+        elif run_status in {"created", "running"}:
+            try:
+                created_at = datetime.fromisoformat(str(run_data["created_at"]))
+                stale = (_utcnow() - created_at).total_seconds() > 600
+            except (KeyError, TypeError, ValueError):
+                stale = True
+            add(
+                f"last_run:{task_id}",
+                "fail" if stale else "warn",
+                f"{'stale ' if stale else ''}{run_status} run {recent[0].name}",
+            )
+        else:
+            add(f"last_run:{task_id}", "ok", f"{run_status} run {recent[0].name}")
         delivery = run_data.get("delivery") or {}
         if delivery.get("status") == "failed":
             add(f"last_delivery:{task_id}", "fail", f"failed run {recent[0].name}")
@@ -694,10 +710,22 @@ def build_health_report() -> dict:
 # ---------------------------------------------------------------------------
 
 
-_RUNNER_SCRIPT_TIMEOUT = 120
+_RUNNER_SCRIPT_TIMEOUT = 300
+_MAX_RUNNER_SCRIPT_TIMEOUT = 900
 
 
-def run_collector(collector_name: str) -> tuple[bool, str, str]:
+def _collector_timeout_seconds(task: dict) -> int:
+    raw = task.get("collector_timeout_seconds", _RUNNER_SCRIPT_TIMEOUT)
+    try:
+        timeout = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid collector_timeout_seconds: {raw!r}") from exc
+    if not 10 <= timeout <= _MAX_RUNNER_SCRIPT_TIMEOUT:
+        raise ValueError(f"collector_timeout_seconds must be between 10 and {_MAX_RUNNER_SCRIPT_TIMEOUT}")
+    return timeout
+
+
+def run_collector(collector_name: str, timeout_seconds: int = _RUNNER_SCRIPT_TIMEOUT) -> tuple[bool, str, str]:
     """
     Run a collector script (from ~/.hermes/scripts/) and capture stdout/stderr.
 
@@ -710,13 +738,15 @@ def run_collector(collector_name: str) -> tuple[bool, str, str]:
         return False, "", f"Invalid collector path: {exc}"
     if not script_path.is_file():
         return False, "", f"Collector script not found: {collector_name}"
+    if not 1 <= int(timeout_seconds) <= _MAX_RUNNER_SCRIPT_TIMEOUT:
+        return False, "", f"Invalid collector timeout: {timeout_seconds}"
 
     try:
         result = subprocess.run(
             [sys.executable, str(script_path)],
             capture_output=True,
             text=True,
-            timeout=_RUNNER_SCRIPT_TIMEOUT,
+            timeout=int(timeout_seconds),
             cwd=str(script_path.parent),
         )
         stdout = (result.stdout or "").strip()
@@ -726,9 +756,40 @@ def run_collector(collector_name: str) -> tuple[bool, str, str]:
             stderr = f"Exit code {result.returncode}:\n{stderr}"
         return success, stdout, stderr
     except subprocess.TimeoutExpired:
-        return False, "", f"Collector timed out after {_RUNNER_SCRIPT_TIMEOUT}s"
+        return False, "", f"Collector timed out after {timeout_seconds}s"
     except Exception as e:
         return False, "", f"Collector error: {e}"
+
+
+def mark_collector_failure(task_id: str, started_at: datetime, error: str) -> Optional[str]:
+    """Close the run created by a collector that failed or timed out."""
+    task = read_task_definition(task_id)
+    if not task:
+        return None
+    runs_dir = _safe_child(RUNS_DIR, task["short_task_id"])
+    if not runs_dir.exists():
+        return None
+    candidates = []
+    for run_dir in runs_dir.iterdir():
+        if not run_dir.is_dir():
+            continue
+        run_data = _read_json(run_dir / "run.json") or {}
+        if run_data.get("status") not in {"created", "running"}:
+            continue
+        try:
+            created_at = datetime.fromisoformat(str(run_data["created_at"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if created_at >= started_at - timedelta(seconds=5):
+            candidates.append((created_at, run_dir, run_data))
+    if not candidates:
+        return None
+    _, run_dir, run_data = max(candidates, key=lambda item: item[0])
+    run_data["status"] = "error"
+    run_data["completed_at"] = _utcnow().isoformat()
+    run_data["collector_error"] = str(error)[:2000]
+    _write_json(run_dir / "run.json", run_data)
+    return run_dir.name
 
 
 # ---------------------------------------------------------------------------
@@ -1243,9 +1304,15 @@ def cli_main() -> None:
                 if not collector:
                     print(f"Task has no collector configured: {args.task_id}", file=sys.stderr)
                     sys.exit(1)
-                ok, stdout, stderr = run_collector(collector)
+                collector_started_at = _utcnow()
+                collector_timeout = _collector_timeout_seconds(task)
+                ok, stdout, stderr = run_collector(collector, timeout_seconds=collector_timeout)
                 if stderr:
                     print(stderr, file=sys.stderr)
+                if not ok:
+                    failed_run_id = mark_collector_failure(args.task_id, collector_started_at, stderr)
+                    if failed_run_id:
+                        print(f"Marked collector run as error: {failed_run_id}", file=sys.stderr)
                 collector_output = None
                 if stdout:
                     print(stdout)

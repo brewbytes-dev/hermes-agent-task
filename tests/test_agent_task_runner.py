@@ -45,6 +45,39 @@ def test_collector_cannot_escape_scripts_directory(tmp_path: Path) -> None:
     assert "outside" in stderr.lower() or "invalid" in stderr.lower()
 
 
+def test_collector_uses_task_aware_bounded_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = load_runner(tmp_path)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "collector.py").write_text("print('{}')\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return runner.subprocess.CompletedProcess(args[0], 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    ok, _, _ = runner.run_collector("collector.py", timeout_seconds=240)
+
+    assert ok is True
+    assert captured["timeout"] == 240
+
+
+def test_collector_failure_closes_created_run(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    create_task(runner)
+    started_at = datetime.now(timezone.utc)
+    run = runner.create_run("sample-task")
+
+    marked = runner.mark_collector_failure("sample-task", started_at, "Collector timed out after 300s")
+
+    assert marked == run["run_id"]
+    data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
+    assert data["status"] == "error"
+    assert data["completed_at"]
+    assert "timed out" in data["collector_error"]
+
+
 def test_delivery_status_is_persisted_without_overwriting_run_status(tmp_path: Path) -> None:
     runner = load_runner(tmp_path)
     create_task(runner)
@@ -159,4 +192,26 @@ def test_doctor_reports_missing_managed_python(tmp_path: Path) -> None:
     assert report["version"] == "0.1.0"
     python_check = next(check for check in report["checks"] if check["name"] == "managed_python")
     assert python_check["status"] == "fail"
+    assert report["healthy"] is False
+
+
+def test_doctor_fails_stale_incomplete_run(tmp_path: Path) -> None:
+    runner = load_runner(tmp_path)
+    create_task(runner)
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    (tmp_path / "scripts" / "collector.py").write_text("print('{}')\n", encoding="utf-8")
+    managed_python = tmp_path / "hermes-agent" / "venv" / "bin" / "python"
+    managed_python.parent.mkdir(parents=True)
+    managed_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    managed_python.chmod(0o755)
+    run = runner.create_run("sample-task")
+    data = json.loads(Path(run["run_file"]).read_text(encoding="utf-8"))
+    data["created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    Path(run["run_file"]).write_text(json.dumps(data), encoding="utf-8")
+
+    report = runner.build_health_report()
+
+    run_check = next(check for check in report["checks"] if check["name"] == "last_run:sample-task")
+    assert run_check["status"] == "fail"
+    assert "stale created" in run_check["detail"]
     assert report["healthy"] is False

@@ -374,7 +374,10 @@ def agent_task_tool(args: Dict[str, Any], **kwargs) -> str:
             runner_args.extend(["--thread-id", str(args.get("thread_id"))])
         if args.get("skip_if_empty"):
             runner_args.append("--skip-if-empty")
-        r = _run_runner(runner_args, timeout=int(args.get("timeout") or 180))
+        timeout = int(args.get("timeout") or 480)
+        if not 1 <= timeout <= 1200:
+            return json.dumps({"success": False, "error": "timeout must be between 1 and 1200 seconds"})
+        r = _run_runner(runner_args, timeout=timeout)
         if r.get("stdout"):
             parsed = _load_json_if_possible(r["stdout"])
             r["collector_output"] = parsed
