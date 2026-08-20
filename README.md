@@ -7,15 +7,16 @@ state, run output, and mailbox credentials.
 ## Install as a Hermes plugin
 
 ```bash
-hermes plugins install brewbytes-dev/hermes-agent-task
+hermes plugins install brewbytes-dev/hermes-agent-task/plugin
 hermes plugins enable agent-task
-hermes plugins doctor ~/.hermes/plugins/hermes-agent-task --ci
+hermes plugins doctor ~/.hermes/plugins/agent-task --ci
 ```
 
-The native `plugin.yaml` and `__init__.py` live at repository root. A normal
-Hermes install therefore includes the bundled runner and collectors, while the
-host-specific deploy workflow below can continue placing runtime scripts in
-`$HERMES_HOME/scripts`.
+The installable package lives in `plugin/`, separate from repository tests and
+host administration. It includes the native manifest, registration hook,
+runner, and collectors. Hermes' security scan can identify the expected
+collector execution and current-user scheduling operations, but the package
+contains no host-administration scripts and requests no elevated privileges.
 
 ## Runtime contract
 
@@ -43,7 +44,7 @@ host-specific deploy workflow below can continue placing runtime scripts in
 ```bash
 python3 -m pytest -q
 ruff check .
-python3 -m compileall -q scripts plugin tests deploy
+python3 -m compileall -q plugin tests deploy
 shellcheck deploy/*.sh
 ```
 

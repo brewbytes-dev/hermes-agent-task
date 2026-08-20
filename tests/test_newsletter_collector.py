@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_collector(home: Path):
     os.environ["HERMES_HOME"] = str(home)
-    scripts = str(ROOT / "scripts")
+    scripts = str(ROOT / "plugin" / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location(
         "newsletter_collector_under_test",
-        ROOT / "scripts" / "agent_task_newsletter_brief_collector.py",
+        ROOT / "plugin" / "scripts" / "agent_task_newsletter_brief_collector.py",
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

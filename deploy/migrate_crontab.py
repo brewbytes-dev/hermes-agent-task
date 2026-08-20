@@ -45,7 +45,7 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parents[1]
     hermes_home = Path(os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes")))
-    plugin_path = args.plugin_path or (repo_root / "agent_task.py")
+    plugin_path = args.plugin_path or (repo_root / "plugin" / "agent_task.py")
     plugin = load_plugin(plugin_path.resolve(), hermes_home)
     tasks = task_definitions(hermes_home)
     rendered = []

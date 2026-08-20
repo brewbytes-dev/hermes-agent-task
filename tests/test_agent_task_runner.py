@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_runner(home: Path):
     os.environ["HERMES_HOME"] = str(home)
     spec = importlib.util.spec_from_file_location(
-        "agent_task_runner_under_test", ROOT / "scripts" / "agent_task_runner.py"
+        "agent_task_runner_under_test", ROOT / "plugin" / "scripts" / "agent_task_runner.py"
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

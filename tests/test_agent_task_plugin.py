@@ -10,13 +10,14 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = ROOT / "plugin"
 
 
 def load_plugin(home: Path):
     constants = types.ModuleType("hermes_constants")
     constants.get_hermes_home = lambda: home
     sys.modules["hermes_constants"] = constants
-    spec = importlib.util.spec_from_file_location("agent_task_plugin_under_test", ROOT / "agent_task.py")
+    spec = importlib.util.spec_from_file_location("agent_task_plugin_under_test", PLUGIN_ROOT / "agent_task.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -30,8 +31,8 @@ def load_plugin_package(home: Path):
     package_name = "agent_task_package_under_test"
     spec = importlib.util.spec_from_file_location(
         package_name,
-        ROOT / "__init__.py",
-        submodule_search_locations=[str(ROOT)],
+        PLUGIN_ROOT / "__init__.py",
+        submodule_search_locations=[str(PLUGIN_ROOT)],
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -46,8 +47,8 @@ def test_cron_line_uses_managed_python_and_durable_log(tmp_path: Path) -> None:
     line = plugin._task_cron_line("newsletter-brief", "0 * * * *", deliver="telegram")
 
     assert str(tmp_path / "hermes-agent" / "venv" / "bin" / "python") in line
-    assert str(ROOT / "scripts" / "agent_task_runner.py") in line
-    assert f"AGENT_TASK_SCRIPTS_DIR={ROOT / 'scripts'}" in line
+    assert str(PLUGIN_ROOT / "scripts" / "agent_task_runner.py") in line
+    assert f"AGENT_TASK_SCRIPTS_DIR={PLUGIN_ROOT / 'scripts'}" in line
     assert str(tmp_path / "logs" / "agent-task" / "newsletter-brief.log") in line
     assert "python3 scripts/agent_task_runner.py" not in line
     assert "umask 077" in line
@@ -274,7 +275,7 @@ def test_plugin_registration_installs_reply_hook(tmp_path: Path) -> None:
 
 
 def test_manifest_targets_stable_installer_and_declares_reply_hook() -> None:
-    manifest_lines = (ROOT / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+    manifest_lines = (PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8").splitlines()
 
     assert "manifest_version: 1" in manifest_lines
     assert "provides_hooks:" in manifest_lines

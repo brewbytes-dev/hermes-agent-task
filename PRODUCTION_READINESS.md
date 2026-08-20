@@ -13,9 +13,9 @@
 - `agent-task-health.timer` is active and its service has a successful result.
 - The plugin package registers both the `agent_task` tool and the
   `pre_gateway_dispatch` continuation hook.
-- `hermes plugins doctor . --ci` passes from repository root with no manifest
-  drift, and a clean `hermes plugins install brewbytes-dev/hermes-agent-task`
-  includes the bundled runner.
+- `hermes plugins doctor plugin --ci` passes with no manifest drift, and a clean
+  `hermes plugins install brewbytes-dev/hermes-agent-task/plugin` includes the
+  bundled runner without packaging host-administration files.
 - The published manifest targets schema v1 so it remains installable by the
   stable Hermes installer while declaring the current tool and hook metadata.
 - Default tool responses omit runner stdout/stderr, exit codes, and paths;

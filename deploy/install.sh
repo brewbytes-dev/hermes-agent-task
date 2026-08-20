@@ -20,7 +20,7 @@ install -d -o "$hermes_user" -g "$hermes_group" -m 0700 "$hermes_home/logs/agent
 install -o "$hermes_user" -g "$hermes_group" -m 0700 \
   "$source_root/deploy/migrate_crontab.py" "$backup_dir/migrate_crontab.py"
 
-for source in "$source_root"/scripts/agent_task_*.py; do
+for source in "$source_root"/plugin/scripts/agent_task_*.py; do
   target="$hermes_home/scripts/$(basename "$source")"
   if [[ -f "$target" ]]; then
     cp -a "$target" "$backup_dir/"
@@ -37,7 +37,7 @@ if [[ -d "$plugin_dir" ]]; then
 fi
 for plugin_file in __init__.py agent_task.py plugin.yaml; do
   install -o "$hermes_user" -g "$hermes_group" -m 0644 \
-    "$source_root/$plugin_file" "$plugin_dir/$plugin_file"
+    "$source_root/plugin/$plugin_file" "$plugin_dir/$plugin_file"
 done
 
 if ! crontab -u "$hermes_user" -l >"$backup_dir/crontab.before" 2>/dev/null; then
