@@ -49,7 +49,7 @@ chmod 0600 "$backup_dir/crontab.before"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \
   "$managed_python" -m py_compile "$hermes_home"/scripts/agent_task_*.py "$plugin_dir/__init__.py" "$plugin_target"
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" PYTHONPATH="$hermes_home/hermes-agent" \
-  "$managed_python" "$backup_dir/migrate_crontab.py" --apply
+  "$managed_python" "$backup_dir/migrate_crontab.py" --plugin-path "$plugin_target" --apply
 # The installer runs as root, so the parent-shell redirects intentionally own these files first.
 # shellcheck disable=SC2024
 sudo -u "$hermes_user" -H env HERMES_HOME="$hermes_home" \

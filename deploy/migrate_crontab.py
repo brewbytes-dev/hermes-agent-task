@@ -12,7 +12,7 @@ import types
 from pathlib import Path
 
 
-def load_plugin(repo_root: Path, hermes_home: Path):
+def load_plugin(plugin_path: Path, hermes_home: Path):
     try:
         import hermes_constants  # noqa: F401
     except ModuleNotFoundError:
@@ -20,10 +20,9 @@ def load_plugin(repo_root: Path, hermes_home: Path):
         constants.get_hermes_home = lambda: hermes_home
         sys.modules["hermes_constants"] = constants
 
-    path = repo_root / "plugin" / "agent_task.py"
-    spec = importlib.util.spec_from_file_location("agent_task_plugin_for_migration", path)
+    spec = importlib.util.spec_from_file_location("agent_task_plugin_for_migration", plugin_path)
     if not spec or not spec.loader:
-        raise RuntimeError(f"Cannot load plugin: {path}")
+        raise RuntimeError(f"Cannot load plugin: {plugin_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -41,11 +40,13 @@ def task_definitions(hermes_home: Path) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="Write the current user crontab")
+    parser.add_argument("--plugin-path", type=Path, help="Explicit installed agent_task.py path")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
     hermes_home = Path(os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes")))
-    plugin = load_plugin(repo_root, hermes_home)
+    plugin_path = args.plugin_path or (repo_root / "plugin" / "agent_task.py")
+    plugin = load_plugin(plugin_path.resolve(), hermes_home)
     tasks = task_definitions(hermes_home)
     rendered = []
     for task in tasks:
