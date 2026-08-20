@@ -273,6 +273,14 @@ def test_plugin_registration_installs_reply_hook(tmp_path: Path) -> None:
     assert registered["hooks"][0][1].__name__ == "agent_task_reply_hook"
 
 
+def test_manifest_targets_stable_installer_and_declares_reply_hook() -> None:
+    manifest_lines = (ROOT / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+
+    assert "manifest_version: 1" in manifest_lines
+    assert "provides_hooks:" in manifest_lines
+    assert "  - pre_gateway_dispatch" in manifest_lines
+
+
 def test_read_defaults_to_latest_run_and_hides_storage_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     plugin = load_plugin(tmp_path)
     run_id = "20260820T030000-abc123"

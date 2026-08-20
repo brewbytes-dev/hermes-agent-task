@@ -16,6 +16,8 @@
 - `hermes plugins doctor . --ci` passes from repository root with no manifest
   drift, and a clean `hermes plugins install brewbytes-dev/hermes-agent-task`
   includes the bundled runner.
+- The published manifest targets schema v1 so it remains installable by the
+  stable Hermes installer while declaring the current tool and hook metadata.
 - Default tool responses omit runner stdout/stderr, exit codes, and paths;
   `debug: true` is the explicit diagnostic escape hatch.
 
